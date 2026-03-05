@@ -13,6 +13,8 @@ export default defineConfig({
                 ws: true,
             },
             '/uploads': 'http://localhost:8000',
+            '/face_data': 'http://localhost:8000',
+            '/danger_zone_images': 'http://localhost:8000',
         },
     },
 })
