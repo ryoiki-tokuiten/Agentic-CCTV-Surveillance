@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from config import (
     CHUNK_DURATION_SECONDS, MAX_PENDING_CHUNKS, RISK_THRESHOLD,
-    UPLOAD_DIR, FRAMES_DIR, AI_PROVIDER
+    UPLOAD_DIR, FRAMES_DIR, AI_PROVIDER, SKIP_KEY_TIMESTAMPS_RANGE
 )
 import database as db
 from agents import (
@@ -371,7 +371,7 @@ async def process_video(video_id: str, video_path: str, broadcast_fn=None):
             })
 
         # ── Step 2: Get key timestamp ranges from Gemini ──
-        if uploaded_file and not tool_less:
+        if uploaded_file and not tool_less and not SKIP_KEY_TIMESTAMPS_RANGE:
             await broadcast("agent_status", {
                 "agent": "pipeline",
                 "status": "extracting_key_timestamps",
@@ -393,7 +393,14 @@ async def process_video(video_id: str, video_path: str, broadcast_fn=None):
                 extract_stamped_key_frames, chunk_path, idx, key_ranges, start_ts
             )
         else:
-            # Fallback: basic even-spaced extraction (tool-less or upload failed)
+            if SKIP_KEY_TIMESTAMPS_RANGE:
+                await broadcast("agent_status", {
+                    "agent": "pipeline",
+                    "status": "extracting_key_timestamps_skipped",
+                    "chunk": idx,
+                    "message": "SKIP_KEY_TIMESTAMPS_RANGE enabled — skipping extraction prompt, passing full video directly",
+                })
+            # Fallback (or skipped): basic even-spaced extraction (tool-less or upload failed)
             key_frames = extract_key_frames_basic(chunk_path, idx, 0, end_ts - start_ts)
 
         # Build history — snapshot of completed reconstructions at this moment
@@ -471,6 +478,7 @@ async def process_video(video_id: str, video_path: str, broadcast_fn=None):
                 start_ts=start_ts,
                 end_ts=end_ts,
                 history=history,
+                uploaded_file=uploaded_file,
                 key_frame_paths=combined_key_frames,
                 tool_less=tool_less,
                 on_event=on_agent_event,

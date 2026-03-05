@@ -303,7 +303,13 @@ Based on the video context and key frames provided below, directly output your a
 Your response must be exactly 4-5 sentences. Output ONLY the reconstruction text, nothing else.
 """
 
-    return f"""{danger_zone_text}You are a surveillance scene narrator for a security monitoring system. Your job is to create an "atomic reconstruction" — the shortest, most complete description of what happened in this video segment.
+    return f"""{danger_zone_text}You are an elite, highly-trained surveillance scene narrator for a security monitoring system. Your job is to create an "atomic reconstruction" — the most precise, observant, and critical description of what happened in this video segment.
+
+CRITICAL DIRECTIVE - HYPER-VIGILANT MODE:
+You are deployed "in the wild" to replace human security guards. You must be EXTRA SUSPICIOUS and deeply observe every single person. Look for subtle behavioral anomalies:
+- Shoplifting cues: Hands hovering near products, slipping items into pockets/jackets/bags, hiding behind shelves, fast unprovoked movements.
+- Weapon cues: Reaching into waistbands, unnatural bulges, clutching objects out of view.
+- Suspicious loitering: Checking blind spots, staring at cameras, lingering near exits.
 
 CRITICAL RULE: Anyone reading your previous atomic reconstructions + this new one must be able to fully visualize and recreate the entire scene chronologically. You are building a continuous narrative.
 
@@ -313,11 +319,12 @@ PREVIOUS ATOMIC RECONSTRUCTIONS (chronological scene history):
 {history_text}
 {tool_instructions}
 GUIDELINES:
-- Be specific about: number of subjects, their movements, positions, interactions, objects carried, clothing if notable, environmental conditions.
+- Be highly specific about: number of subjects, their hand placements, pocket interactions, hidden movements, and objects carried.
+- DO NOT just call a scene "normal". If nothing malicious is happening, you must explicitly describe *why* that person's specific actions (e.g., browsing shelves with visible empty hands) proved they were innocent.
 - Use present tense for the current segment.
 - Reference spatial relationships (left/right, near/far, entering/exiting).
 - Note anything that changed compared to previous reconstructions.
-- Keep it to exactly 4-5 sentences. Every word must carry information.
+- Keep it to exactly 4-5 sentences. Every word must carry intense observation.
 """
 
 
@@ -362,29 +369,34 @@ Your response must be valid JSON with this exact format:
 Output ONLY the JSON, nothing else.
 """
 
-    return f"""{danger_zone_text}You are a security surveillance analyst for a real-time monitoring system. Analyze the current 2-minute video segment for potential threats, suspicious behavior, or security concerns.
+    return f"""{danger_zone_text}You are a veteran security surveillance analyst for a real-time monitoring system. You are acting as a standalone AI guard protecting this facility.
+
+CRITICAL DIRECTIVE - MAXIMUM VIGILANCE:
+Assume "guilty until proven innocent". You must deeply observe every person's behavior, no matter how benign it seems at first glance.
+DO NOT lazily classify interactions as "Normal Activity" or "Benign". Every action must be deeply scrutinized for subtle threats.
+If you classify something as low risk, your reasoning MUST be a deeply detailed paragraph explaining exactly what the person was doing and how you verified their hands, pockets, and intent were completely clean.
 
 Current video segment timestamp range: {start_ts:.0f}s to {end_ts:.0f}s
 
 SCENE HISTORY (previous atomic reconstructions):
 {history_text}
 {tool_instructions}
-THREAT ASSESSMENT CRITERIA:
-- Loitering: Subject remaining stationary in non-resting areas for extended periods
-- Unauthorized Access: Attempts to enter restricted zones, tampering with locks/gates
-- Suspicious Objects: Unattended bags, packages left near entry points
-- Aggressive Behavior: Running, sudden movements, physical confrontation
-- Perimeter Violations: Climbing fences, entering through non-entry points
-- Pattern Anomalies: Behavior that deviates significantly from the scene history
+THREAT ASSESSMENT CRITERIA (Look closely for these):
+- Shoplifting / Theft: Concealing items in clothing/bags, rapid grabbing, blind-spot exploitation.
+- Concealed Weapons: Brandishing, unnatural waistline bulges, reaching into jackets.
+- Loitering: Subject remaining stationary in non-resting areas, scouting exits, staring at cameras.
+- Unauthorized Access: Attempts to enter restricted zones, tampering with locks/gates.
+- Suspicious Objects: Unattended bags, packages left near entry points.
+- Aggressive Behavior: Running, sudden movements, physical confrontation.
 
 SCORING GUIDE:
-- 0.0-0.2: Normal activity, routine movement
-- 0.2-0.4: Mildly unusual but likely benign
-- 0.4-0.6: Moderately suspicious, warrants continued monitoring
-- 0.6-0.8: Suspicious, recommend review
-- 0.8-1.0: High threat, immediate action recommended
+- 0.0-0.2: Extensively verified benign activity. (Requires extreme justification of innocence).
+- 0.2-0.4: Slightly unusual behavior, hands obscured, pacing.
+- 0.4-0.6: Moderately suspicious, possible concealment, aggressive body language.
+- 0.6-0.8: High suspicion of theft, trespassing, or preparations for violence.
+- 0.8-1.0: Active theft, weapon drawn, violence, or direct danger.
 
-Be precise and justify your score with specific observations.
+Be utterly unforgiving in your observation. Justify your score with paragraph-length, highly specific reasoning regarding hands, stances, and objects.
 """
 
 
@@ -398,6 +410,7 @@ async def run_narrative_builder(
     start_ts: float,
     end_ts: float,
     history: list[dict],
+    uploaded_file=None,       # Pre-uploaded Gemini file reference
     key_frame_paths: list[str] | None = None,
     tool_less: bool = False,
     on_event=None,       # async callback(event_type, data) for real-time UI
@@ -451,7 +464,13 @@ async def run_narrative_builder(
             initial_parts.extend(dz_image_parts)
             initial_parts.append(types.Part(text="[DANGER ZONE REFERENCE IMAGES] The images above show the operator-defined danger zone or dangerous behavior examples. Use these as reference when analyzing the video segment."))
 
-    if key_frame_paths:
+    if uploaded_file:
+        initial_parts.append(types.Part(file_data=types.FileData(
+            file_uri=uploaded_file.uri,
+            mime_type=uploaded_file.mime_type,
+        )))
+        prompt_text = f"This is the full uncompressed 2-minute video segment from {start_ts:.0f}s to {end_ts:.0f}s. Analyze this segment and create an atomic reconstruction."
+    elif key_frame_paths:
         initial_parts.extend(_load_frames_as_parts(key_frame_paths))
         prompt_text = f"These are key frames from the video segment ({start_ts:.0f}s to {end_ts:.0f}s). Analyze this segment and create an atomic reconstruction."
     else:
@@ -498,12 +517,15 @@ async def run_narrative_builder(
         print(f"[NB] Chunk {chunk_index} iteration {iteration} — response received")
 
         candidate = response.candidates[0]
-        has_function_call = False
+        function_calls = [part.function_call for part in candidate.content.parts if part.function_call]
 
-        for part in candidate.content.parts:
-            if part.function_call:
-                has_function_call = True
-                fc = part.function_call
+        if function_calls:
+            # Append the model's response exactly once to preserve thought_signatures properly
+            contents.append(candidate.content)
+
+            user_response_parts = []
+            
+            for fc in function_calls:
                 tool_call_log.append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
 
                 if on_event:
@@ -527,18 +549,21 @@ async def run_narrative_builder(
                     frames = _extract_frames_for_range(video_path, s, e, chunk_index, f"nb_{iteration}")
                     frame_parts = _load_frames_as_parts(frames)
 
-                    contents.append(candidate.content)
-                    contents.append(types.Content(role="user", parts=[
+                    user_response_parts.append(
                         types.Part.from_function_response(
                             name="view_key_clip",
                             response={"result": f"Extracted {len(frames)} frames from {s:.0f}s to {e:.0f}s.", "frame_count": len(frames)},
                         )
-                    ]))
+                    )
+                    
                     if frame_parts:
-                        frame_parts.append(types.Part(text=f"Here are the extracted frames from {s:.0f}s to {e:.0f}s."))
-                        contents.append(types.Content(role="user", parts=frame_parts))
+                        user_response_parts.append(types.Part(text=f"Here are the extracted frames from {s:.0f}s to {e:.0f}s."))
+                        user_response_parts.extend(frame_parts)
 
-        if not has_function_call:
+            if user_response_parts:
+                contents.append(types.Content(role="user", parts=user_response_parts))
+
+        else:
             text = response.text if response.text else ""
             if text and not result_text:
                 result_text = text.strip()
@@ -697,12 +722,15 @@ async def run_reasoner(
         print(f"[RS] Chunk {chunk_index} iteration {iteration} — response received")
 
         candidate = response.candidates[0]
-        has_function_call = False
+        function_calls = [part.function_call for part in candidate.content.parts if part.function_call]
 
-        for part in candidate.content.parts:
-            if part.function_call:
-                has_function_call = True
-                fc = part.function_call
+        if function_calls:
+            # Append the model's response exactly once to preserve thought_signatures properly
+            contents.append(candidate.content)
+
+            user_response_parts = []
+            
+            for fc in function_calls:
                 tool_call_log.append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
 
                 if on_event:
@@ -732,18 +760,21 @@ async def run_reasoner(
                     frames = _extract_frames_for_range(video_path, s, e, chunk_index, f"rs_{iteration}")
                     frame_parts = _load_frames_as_parts(frames)
 
-                    contents.append(candidate.content)
-                    contents.append(types.Content(role="user", parts=[
+                    user_response_parts.append(
                         types.Part.from_function_response(
                             name="view_feed_timestamp",
                             response={"result": f"Extracted {len(frames)} frames from {s:.0f}s to {e:.0f}s.", "frame_count": len(frames)},
                         )
-                    ]))
+                    )
+                    
                     if frame_parts:
-                        frame_parts.append(types.Part(text=f"Here are the extracted frames from {s:.0f}s to {e:.0f}s."))
-                        contents.append(types.Content(role="user", parts=frame_parts))
+                        user_response_parts.append(types.Part(text=f"Here are the extracted frames from {s:.0f}s to {e:.0f}s."))
+                        user_response_parts.extend(frame_parts)
 
-        if not has_function_call:
+            if user_response_parts:
+                contents.append(types.Content(role="user", parts=user_response_parts))
+
+        else:
             text = response.text if response.text else ""
             try:
                 parsed = json.loads(text)
