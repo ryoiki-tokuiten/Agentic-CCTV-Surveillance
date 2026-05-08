@@ -1,0 +1,4 @@
+# Optional dependencies for dataset generation (generate_dataset_agl.py)
+# Install with: pip install -r requirements-dataset.txt
+-r requirements.txt
+agentlightning==0.3.0
